@@ -45,6 +45,11 @@ export function InstallButton({
       return
     }
     
+    // Request notification permission during install
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission()
+    }
+    
     await install()
   }
   

@@ -1,84 +1,97 @@
 "use client"
 
-import { useEffect, useState, useCallback, memo } from "react"
-import { ThemeProvider } from "@/components/theme-context"
+import { useEffect, useState } from "react"
 import { Toaster } from "@/components/ui/toaster"
-import { LoadingScreen } from "@/components/loading-screen"
-import { useAuth } from "@/contexts/auth-context"
+import { ThemeProvider } from "next-themes"
+import { AuthProvider } from "@/contexts/auth-context"
+import { PWAStatus } from "@/components/pwa-status"
+import { InstallPrompt } from "@/components/install-prompt"
+import { useOffline } from "@/hooks/use-offline"
 
-// Memoize components that don't need to re-render with state changes
-const MemoizedToaster = memo(Toaster)
+export function RootClientWrapper({ children }: { children: React.ReactNode }) {
+  const { isOnline } = useOffline()
+  const [initialized, setInitialized] = useState(false)
 
-export function RootClientWrapper({
-  children,
-}: {
-  children: React.ReactNode
-}) {
-  const [isOnline, setIsOnline] = useState(true)
-  const [isInitializing, setIsInitializing] = useState(true)
-  const { isLoading: authLoading } = useAuth()
-  
-  // Memoize the online status handler to prevent unnecessary re-renders
-  const handleOnlineStatus = useCallback(() => {
-    setIsOnline(navigator.onLine)
-    
-    // Show toast notification when status changes
-    if (navigator.onLine) {
-      // Could show a toast notification here that we're back online
-    } else {
-      // Could show a toast notification here that we're offline
-    }
-  }, [])
-  
-  // Handle online/offline status
   useEffect(() => {
-    // Set initial status
-    setIsOnline(navigator.onLine)
-    
-    // Add event listeners
-    window.addEventListener('online', handleOnlineStatus)
-    window.addEventListener('offline', handleOnlineStatus)
-    
-    // Clean up
+    const initializeServices = async () => {
+      try {
+        // Initialize IndexedDB
+        const { db } = await import('@/lib/db')
+        await db.init()
+        console.log('[PWA] Database initialized')
+
+        // Initialize notifications
+        const { notificationManager } = await import('@/lib/notifications')
+        await notificationManager.init()
+        console.log('[PWA] Notification manager initialized')
+
+        // Register service worker manually if needed
+        if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
+          try {
+            const registration = await navigator.serviceWorker.register('/sw.js', {
+              scope: '/',
+              updateViaCache: 'none'
+            })
+
+            registration.addEventListener('updatefound', () => {
+              console.log('[PWA] Service worker update found')
+              const newWorker = registration.installing
+              if (newWorker) {
+                newWorker.addEventListener('statechange', () => {
+                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    // New service worker is available
+                    window.dispatchEvent(new CustomEvent('sw-update-available'))
+                  }
+                })
+              }
+            })
+
+            console.log('[PWA] Service worker registered')
+          } catch (error) {
+            console.error('[PWA] Service worker registration failed:', error)
+          }
+        }
+
+        setInitialized(true)
+      } catch (error) {
+        console.error('[PWA] Initialization failed:', error)
+        setInitialized(true) // Continue even if some services fail
+      }
+    }
+
+    initializeServices()
+
+    // Listen for app update events
+    const handleAppUpdate = () => {
+      if (confirm('A new version of MessHub is available. Reload to update?')) {
+        window.location.reload()
+      }
+    }
+
+    window.addEventListener('sw-update-available', handleAppUpdate)
+
     return () => {
-      window.removeEventListener('online', handleOnlineStatus)
-      window.removeEventListener('offline', handleOnlineStatus)
+      window.removeEventListener('sw-update-available', handleAppUpdate)
     }
-  }, [handleOnlineStatus])
-
-  // Prevent transitions on page load
-  useEffect(() => {
-    // Add no-transition class to prevent transitions on page load
-    document.documentElement.classList.add('no-transition')
-    
-    // Remove the class after a short delay to allow transitions after initial load
-    const timeoutId = setTimeout(() => {
-      document.documentElement.classList.remove('no-transition')
-    }, 100)
-    
-    return () => clearTimeout(timeoutId)
   }, [])
-
-  // Handle initial app loading
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsInitializing(false)
-    }, 1500) // Show loading screen for 1.5 seconds minimum
-
-    return () => clearTimeout(timer)
-  }, [])
-
-  // Show loading screen during auth loading or initial app loading
-  const shouldShowLoading = authLoading || isInitializing
-
-  if (shouldShowLoading) {
-    return <LoadingScreen />
-  }
 
   return (
-    <ThemeProvider>
-      {children}
-      <MemoizedToaster />
+    <ThemeProvider
+      attribute="class"
+      defaultTheme="system"
+      enableSystem
+      disableTransitionOnChange
+    >
+      <AuthProvider>
+        {children}
+        <Toaster />
+        {initialized && (
+          <>
+            <PWAStatus isOnline={isOnline} />
+            <InstallPrompt />
+          </>
+        )}
+      </AuthProvider>
     </ThemeProvider>
   )
-} 
+}
